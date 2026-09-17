@@ -31,8 +31,11 @@ remain unready. Clearing a previously selected loadout requires the server's
 `empty_loadout` capability. Between matches the server clears loadouts, so the
 first empty selection in a new lobby requires no clearing message.
 
-`game_start` can carry changed ship specs and dt; `OnWelcome` runs with those
-values before the start callback. Commands echo the exact match ID and tick of
+`game_start` and `lobby` can carry full configuration snapshots and hashes. These
+are validated atomically and refresh all derived rules before lifecycle callbacks
+and readiness. Older game-start frames carrying only changed ship specs or dt
+also refresh the typed and raw rules. `OnWelcome` runs when the snapshot changes.
+Commands echo the exact match ID and tick of
 the corresponding observation. The runtime owns the receive loop and handles
 fragmented text frames. Invalid JSON, non-object JSON, binary frames, and malformed
 typed messages are ignored and counted; malformed individual events remain raw.
@@ -42,7 +45,11 @@ pacing and can differ from `1 / simulation_dt`. Track velocity, lead calculation
 and splash prediction use simulation time.
 
 Callback errors or invalid/nonfinite command values produce a hold command for
-that tick. Unknown activation IDs are rejected locally; the server remains
+that tick. Superseded or locally expired commands, including holds, are discarded.
+The socket reader runs independently of callbacks; adjacent queued ticks may be
+coalesced with their events preserved in the newest observation. Lifecycle/error
+boundaries remain ordered and recordings retain the original frames. Unknown
+activation IDs are rejected locally; the server remains
 authoritative for loadout membership, use state, cooldowns, and command deadlines.
 
 Error codes `unauthorized`, `invalid_name`, `duplicate_name`, and `rate_limited`

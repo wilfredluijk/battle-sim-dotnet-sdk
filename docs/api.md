@@ -10,7 +10,7 @@ outside the server's finite `float` range are rejected.
 | Callback | Default / contract |
 | --- | --- |
 | `AcceptConfiguration(JsonObject, string)` | Return true to accept a validated configuration and hash. False stays unready. Receives a defensive copy. |
-| `OnWelcome(Welcome)` | Observe initial or updated rules; also called for changed match-start specifications. |
+| `OnWelcome(Welcome)` | Observe initial or updated rules, including changed game-start and lobby snapshots. |
 | `ChoosePowerups(Welcome)` | Return `[]` or two distinct available IDs. Called for each new lobby/configuration. |
 | `OnGameStartEvent(GameStart)` | Typed match start; delegates to the positional callback by default. |
 | `OnGameStart(int, Vec2, double)` | Tick, spawn position, compass heading. `MatchId` is already populated. |
@@ -22,9 +22,15 @@ outside the server's finite `float` range are rejected.
 | `OnDisconnect(DisconnectInfo)` | Observe close code, reason, and interrupted phase. |
 
 Callbacks run synchronously and serially on the runner's continuation thread.
+An independent socket reader keeps servicing WebSocket control frames while a
+callback runs. Adjacent queued ticks from one match can be coalesced: the newest
+observation receives their events in order, while intermediate contacts/self states
+are skipped. Lifecycle and error callbacks retain their order. See
+[timing and connection troubleshooting](troubleshooting.md).
 Do not implement them as `async void`; use synchronous decisions over cached data.
 Exceptions are isolated and counted; `OnTick` exceptions and invalid commands
-send hold commands. `OnGameOver` exceptions retain the default of continuing.
+produce hold commands. Commands are sent only while their tick is still current
+and within its locally measured deadline. `OnGameOver` exceptions retain the default of continuing.
 A callback cannot be forcibly interrupted at its deadline.
 
 Bot state: `Welcome`, `LastTick`, `MatchId`, `Phase`, `Diagnostics`. Phases are
@@ -39,7 +45,10 @@ because the managed runner owns the reader. Use typed callbacks or a recorder.
 `BotRunner.Run` is the synchronous wrapper. The result is the most recent match
 result, or null when no match completed. Cancellation throws
 `OperationCanceledException`. Unsupported versions throw `ProtocolMismatchException`.
-Exhausted connection/handshake failures throw a sanitized `IOException`.
+Exhausted connection/handshake or established-session transport failures throw a
+sanitized `IOException`. Abnormal WebSocket close codes also throw. Normal closes
+(1000/1001), fatal server error frames and `OnGameOver` opt-out return the last
+result; inspect `LastDisconnect` and `RejectedCommands` to distinguish them.
 
 | `RunOptions` property | Default |
 | --- | --- |
@@ -56,6 +65,9 @@ Exhausted connection/handshake failures throw a sanitized `IOException`.
 Retries are bounded and only occur outside an active match. A dropped active
 connection forfeits the ship and is never silently resumed. Fatal authentication,
 name, or rate-limit errors stop without reconnecting.
+Incoming buffering is bounded to 128 frames. If callbacks or recording cannot
+keep up even with tick coalescing, the run reports an actionable `IOException`.
+`RunOptions.ToString()` redacts the token and omits free-form connection fields.
 
 ## Models
 
@@ -101,9 +113,14 @@ fields omitted; the server clamps throttle and rudder to [-1,1].
 
 ## Diagnostics
 
-`RuntimeDiagnostics` contains `Ticks`, `Overruns`, `CallbackErrors`,
+`RuntimeDiagnostics` contains `Ticks`, `Overruns`, `SkippedTicks`, `DiscardedCommands`, `CallbackErrors`,
 `MalformedFrames`, `RejectedCommands` keyed by code, `LastTiming`, and
 `LastDisconnect`. A live run/replay starts fresh diagnostics; reconnect attempts
-within one run accumulate them. Timing excludes network latency. The SDK does not
+within one run accumulate them. `Ticks` counts decisions actually evaluated;
+`SkippedTicks` counts intermediate observations coalesced into a newer tick;
+`DiscardedCommands` counts computed commands suppressed before sending. Timing
+covers decision and serialization work, excluding queue delay, network latency
+and the `OnTickTiming` hook itself. The send guard also accounts for time spent
+queued, recording, waiting for another send and in that hook. The SDK does not
 log hello frames or credentials. Raw server error/close text is supplied to your
 callbacks; decide what your application's logger should retain.

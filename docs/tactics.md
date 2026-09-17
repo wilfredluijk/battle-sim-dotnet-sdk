@@ -50,7 +50,10 @@ stalenessTicks = 40)` associates active contacts greedily by predicted distance.
 Per-tick contact IDs are unstable; `TrackId` is locally stable. Only active
 (ranged) contacts create tracks. Passive contacts associate by bearing and cannot
 refresh an active position fix. Unobserved tracks are dead-reckoned; old or
-backward-tick tracks are pruned.
+backward-tick tracks are pruned before association, so they cannot be revived by a
+new observation. Known contact kinds must match: a shell cannot update a ship
+track, including through a passive observation. Unknown contacts may associate
+with a known kind; an unknown track can become a known kind after an active fix.
 
 Call `Update(view)` once per tick; use `Tracks`, `Get(id)`, and `Reset()`. Tracks
 expose `Pos`, `ObservedPos`, `Vel` (units/second), first/last seen ticks, last active

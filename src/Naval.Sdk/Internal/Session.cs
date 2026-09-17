@@ -10,6 +10,7 @@ internal sealed class Session(Bot bot)
     internal GameOver? Result { get; private set; }
     internal bool Stop { get; private set; }
     internal bool Fatal { get; private set; }
+    internal string? FatalCode { get; private set; }
 
     internal static T Call<T>(Bot bot, Func<T> callback, T fallback)
     {
@@ -61,25 +62,39 @@ internal sealed class Session(Bot bot)
                 case "game_start":
                     var start = GameStart.FromJson(message);
                     if (start.MatchId.Length == 0 || bot.Welcome is null) throw new FormatException("A match ID and welcome are required.");
-                    if (start.ShipSpecs is { } specs && (specs != bot.Welcome.ShipSpecs || start.SimulationDt != bot.Welcome.SimulationDt))
+                    var matchWelcome = Snapshot(message, bot.Welcome);
+                    if (!message.ContainsKey("configuration"))
                     {
-                        bot.Welcome = bot.Welcome with { ShipSpecs = specs, SimulationDt = start.SimulationDt };
-                        Call(bot, () => bot.OnWelcome(bot.Welcome));
+                        // Older protocol-3 servers send only the match's specs and dt.
+                        // Keep the typed rules and raw configuration consistent too.
+                        var configuration = matchWelcome.Configuration;
+                        if (message["ship_specs"] is { } specs)
+                        {
+                            configuration["ship_specs"] = specs.DeepClone();
+                            foreach (var pair in Wire.Object(specs))
+                                configuration["sim_config"]![pair.Key] = pair.Value?.DeepClone();
+                        }
+                        if (message["simulation_dt"] is { } dt) configuration["simulation_dt"] = dt.DeepClone();
+                        matchWelcome = matchWelcome.WithConfiguration(configuration, matchWelcome.ConfigHash);
                     }
+                    RefreshWelcome(matchWelcome);
+                    start = start with { ShipSpecs = matchWelcome.ShipSpecs, SimulationDt = matchWelcome.SimulationDt };
                     bot.Phase = "running"; bot.MatchId = start.MatchId; bot.LastTick = start.Tick;
                     Call(bot, () => bot.OnGameStartEvent(start));
                     break;
                 case "tick":
-                    var view = WorldView.FromJson(message);
-                    if (view.MatchId.Length == 0 || bot.Welcome is null) throw new FormatException("A match ID and welcome are required.");
-                    bot.LastTick = view.Tick; bot.MatchId = view.MatchId; bot.Phase = "running";
-                    return [MakeCommand(view)];
+                    return HandleTick(WorldView.FromJson(message));
                 case "game_over":
                     Result = GameOver.FromJson(message); bot.Phase = "ended";
                     Stop = !Call(bot, () => bot.OnGameOver(Result), true); readySent = false;
                     break;
                 case "lobby":
                     var tick = Wire.Int(message, "tick", 0);
+                    if (bot.Welcome is { } previous)
+                    {
+                        var lobbyWelcome = Snapshot(message, previous);
+                        if (RefreshWelcome(lobbyWelcome)) readySent = false;
+                    }
                     bot.Phase = "lobby"; bot.LastTick = tick; bot.MatchId = "";
                     Call(bot, () => bot.OnLobby(tick));
                     if (!readySent) { loadout = null; return Ready(); }
@@ -87,7 +102,8 @@ internal sealed class Session(Bot bot)
                 case "error":
                     var code = Wire.String(message, "code", "unknown");
                     bot.Diagnostics.Rejections[code] = bot.Diagnostics.Rejections.GetValueOrDefault(code) + 1;
-                    Fatal |= code is "unauthorized" or "invalid_name" or "duplicate_name" or "rate_limited";
+                    if (code is "unauthorized" or "invalid_name" or "duplicate_name" or "rate_limited")
+                    { Fatal = true; FatalCode = code; }
                     var text = Wire.String(message, "message", "");
                     Call(bot, () => bot.OnError(code, text));
                     break;
@@ -96,6 +112,31 @@ internal sealed class Session(Bot bot)
         catch (ProtocolMismatchException) { Fatal = true; throw; }
         catch (Exception e) when (Wire.IsMalformed(e)) { bot.Diagnostics.MalformedFrames++; }
         return [];
+    }
+
+    private static Welcome Snapshot(JsonObject message, Welcome current)
+    {
+        if (!message.ContainsKey("configuration") && !message.ContainsKey("config_hash")) return current;
+        var updated = current.WithConfiguration(Wire.Object(message["configuration"]), Wire.String(message["config_hash"]));
+        Wire.CheckProtocol(updated.ProtocolVersion);
+        return updated;
+    }
+
+    private bool RefreshWelcome(Welcome updated)
+    {
+        if (bot.Welcome is { } previous && previous.ConfigHash == updated.ConfigHash &&
+            JsonNode.DeepEquals(previous.Configuration, updated.Configuration)) return false;
+        bot.Welcome = updated;
+        Call(bot, () => bot.OnWelcome(updated));
+        return true;
+    }
+
+    internal IReadOnlyList<JsonObject> HandleTick(WorldView view)
+    {
+        if (view.MatchId.Length == 0 || bot.Welcome is null)
+        { bot.Diagnostics.MalformedFrames++; return []; }
+        bot.LastTick = view.Tick; bot.MatchId = view.MatchId; bot.Phase = "running";
+        return [MakeCommand(view)];
     }
 
     private JsonObject MakeCommand(WorldView view)

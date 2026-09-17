@@ -1,6 +1,5 @@
 using System.Net.WebSockets;
 using System.Text;
-using System.Text.Json;
 using System.Text.Json.Nodes;
 using Naval.Sdk.Internal;
 
@@ -20,6 +19,10 @@ public sealed record RunOptions
     public TimeSpan ReconnectDelay { get; init; } = TimeSpan.FromSeconds(1);
     public TimeSpan HandshakeTimeout { get; init; } = TimeSpan.FromSeconds(10);
     public int MaxMessageBytes { get; init; } = 1024 * 1024;
+
+    // Omit free-form connection fields as well: an invalid URL can contain credentials.
+    public override string ToString() => $"RunOptions {{ Token = [redacted], ReconnectAttempts = {ReconnectAttempts}, " +
+        $"ReconnectDelay = {ReconnectDelay}, HandshakeTimeout = {HandshakeTimeout}, MaxMessageBytes = {MaxMessageBytes} }}";
 
     internal (Uri Uri, string Token) Resolve()
     {
@@ -46,7 +49,8 @@ public static class BotRunner
     public static GameOver? Run(Bot bot, RunOptions? options = null, CancellationToken cancellationToken = default) =>
         RunAsync(bot, options, cancellationToken).GetAwaiter().GetResult();
 
-    /// <summary>Run matches until stopped or disconnected. Reconnect only outside active matches.</summary>
+    /// <summary>Run matches until stopped or normally closed. Unexpected transport failures throw IOException;
+    /// reconnect attempts are allowed only outside active matches.</summary>
     public static async Task<GameOver?> RunAsync(Bot bot, RunOptions? options = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(bot);
@@ -64,37 +68,72 @@ public static class BotRunner
                 using var socket = new ClientWebSocket();
                 using var sendLock = new SemaphoreSlim(1, 1);
                 using var handshake = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                using var connection = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 handshake.CancelAfter(options.HandshakeTimeout);
+                IncomingMessages? incoming = null;
                 int? closeCode = null;
                 var reason = "client stopped";
-                async Task Send(JsonObject message, CancellationToken ct)
+                async Task Send(JsonObject message, CancellationToken ct, ReceivedTick? tick = null)
                 {
-                    var bytes = Encoding.UTF8.GetBytes(message.ToJsonString());
                     await sendLock.WaitAsync(ct).ConfigureAwait(false);
-                    try { await socket.SendAsync(bytes.AsMemory(), WebSocketMessageType.Text, true, ct).ConfigureAwait(false); }
+                    try
+                    {
+                        var bytes = Encoding.UTF8.GetBytes(message.ToJsonString());
+                        // Check after callbacks, recording, serialization and any competing raw send.
+                        if (tick is not null && !tick.CanSend) { bot.Diagnostics.DiscardedCommands++; return; }
+                        await socket.SendAsync(bytes.AsMemory(), WebSocketMessageType.Text, true, ct).ConfigureAwait(false);
+                    }
                     finally { sendLock.Release(); }
                 }
                 try
                 {
                     await socket.ConnectAsync(uri, handshake.Token).ConfigureAwait(false);
-                    bot.Sender = Send;
+                    bot.Sender = (message, ct) => Send(message, ct);
                     await Send(new() { ["type"] = "hello", ["name"] = options.Name, ["version"] = options.Version, ["token"] = token }, handshake.Token).ConfigureAwait(false);
+                    incoming = new(socket, options.MaxMessageBytes, connection.Token);
+                    var pendingEvents = new List<TickEvent>();
+                    var coalesced = 0;
                     while (!session.Stop && !session.Fatal)
                     {
-                        var frame = await Receive(socket, options.MaxMessageBytes, bot.Phase == "connecting" ? handshake.Token : cancellationToken).ConfigureAwait(false);
+                        if (!await incoming.Reader.WaitToReadAsync(bot.Phase == "connecting" ? handshake.Token : cancellationToken).ConfigureAwait(false)) break;
+                        if (!incoming.Reader.TryRead(out var frame)) continue;
                         if (frame.Closed)
                         {
                             closeCode = socket.CloseStatus is { } status ? (int)status : null;
-                            reason = socket.CloseStatusDescription ?? "connection closed";
+                            reason = string.IsNullOrEmpty(socket.CloseStatusDescription) ? "connection closed" : socket.CloseStatusDescription;
+                            if (closeCode is not (1000 or 1001))
+                                throw new TransportFailureException($"Server closed the WebSocket abnormally (code {closeCode?.ToString() ?? "none"}).");
                             break;
                         }
-                        if (frame.Text is null) { bot.Diagnostics.MalformedFrames++; continue; }
-                        JsonObject message;
-                        try { message = Wire.Object(JsonNode.Parse(frame.Text)); }
-                        catch (Exception e) when (Wire.IsMalformed(e)) { bot.Diagnostics.MalformedFrames++; continue; }
+                        if (frame.Message is not { } message) { bot.Diagnostics.MalformedFrames++; continue; }
                         options.Recorder?.Record(message);
-                        foreach (var payload in session.Handle(message)) await Send(payload, cancellationToken).ConfigureAwait(false);
+                        IReadOnlyList<JsonObject> payloads;
+                        if (frame.Tick is { } received)
+                        {
+                            var view = received.View;
+                            // Coalesce only adjacent valid ticks in one match. Lifecycle and error
+                            // callbacks retain their order, and each consumed original frame is recorded.
+                            if (coalesced < IncomingMessages.Capacity && incoming.Reader.TryPeek(out var next) &&
+                                next.Tick is { } newer && newer.View.MatchId == view.MatchId && newer.View.Tick > view.Tick)
+                            {
+                                pendingEvents.AddRange(view.Events);
+                                coalesced++; bot.Diagnostics.SkippedTicks++;
+                                continue;
+                            }
+                            if (pendingEvents.Count > 0)
+                            {
+                                pendingEvents.AddRange(view.Events);
+                                view = view with { Events = Array.AsReadOnly(pendingEvents.ToArray()) };
+                                pendingEvents.Clear();
+                            }
+                            coalesced = 0;
+                            payloads = session.HandleTick(view);
+                        }
+                        else payloads = session.Handle(message);
+                        if (bot.Phase != "connecting") handshake.CancelAfter(Timeout.InfiniteTimeSpan);
+                        foreach (var payload in payloads) await Send(payload, cancellationToken, frame.Tick).ConfigureAwait(false);
                     }
+                    if (session.Fatal) reason = $"server rejected connection ({session.FatalCode})";
                     if (socket.State is WebSocketState.Open or WebSocketState.CloseReceived)
                     {
                         using var closing = new CancellationTokenSource(TimeSpan.FromSeconds(2));
@@ -102,15 +141,24 @@ public static class BotRunner
                     }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { reason = "cancelled"; throw; }
+                catch (ProtocolMismatchException) { reason = "unsupported protocol version"; throw; }
                 catch (Exception e) when (e is WebSocketException or IOException or OperationCanceledException)
                 {
-                    reason = "connection failed or handshake timed out";
-                    if (bot.Phase == "connecting" && (attempt >= options.ReconnectAttempts || session.Fatal))
+                    reason = e switch
+                    {
+                        TransportFailureException limit => limit.Message,
+                        WebSocketException ws => $"WebSocket transport failed ({ws.WebSocketErrorCode}).",
+                        OperationCanceledException => "handshake timed out",
+                        _ => "I/O failure while receiving, recording or sending."
+                    };
+                    if (bot.Phase == "running" || attempt >= options.ReconnectAttempts || session.Fatal)
                         throw new IOException(reason); // Do not expose an endpoint or credential in an inner exception.
                 }
                 finally
                 {
                     bot.Sender = null;
+                    connection.Cancel();
+                    if (incoming is not null) await incoming.Completion.ConfigureAwait(false);
                     lastResult = session.Result ?? lastResult;
                     var info = new DisconnectInfo(closeCode, reason, bot.Phase);
                     bot.Diagnostics.LastDisconnect = info;
@@ -122,24 +170,5 @@ public static class BotRunner
         }
         finally { bot.Sender = null; bot.Phase = "disconnected"; Interlocked.Exchange(ref bot.Running, 0); }
         return lastResult;
-    }
-
-    private static async Task<(bool Closed, string? Text)> Receive(ClientWebSocket socket, int maxBytes, CancellationToken ct)
-    {
-        var buffer = new byte[8192];
-        using var message = new MemoryStream();
-        ValueWebSocketReceiveResult result;
-        var binary = false;
-        do
-        {
-            result = await socket.ReceiveAsync(buffer.AsMemory(), ct).ConfigureAwait(false);
-            if (result.MessageType == WebSocketMessageType.Close) return (true, null);
-            binary |= result.MessageType != WebSocketMessageType.Text;
-            if (message.Length + result.Count > maxBytes) throw new IOException("Server message exceeded the configured size limit.");
-            message.Write(buffer, 0, result.Count);
-        } while (!result.EndOfMessage);
-        if (binary) return (false, null);
-        try { return (false, new UTF8Encoding(false, true).GetString(message.GetBuffer(), 0, (int)message.Length)); }
-        catch (DecoderFallbackException) { return (false, null); }
     }
 }

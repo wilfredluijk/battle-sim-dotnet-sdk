@@ -19,6 +19,13 @@ names containing `token`, `password`, `credential`, or `authorization` are repla
 with `[redacted]`. Arbitrary secrets embedded inside otherwise unmarked strings
 cannot be detected automatically.
 
+Live tick coalescing records each consumed original frame before combining events
+for the next decision. The file keeps the individual events and intermediate
+observations. Offline replay evaluates every recorded tick without the live
+deadline/supersession guard, so its decision count can exceed a slow live bot's
+decision count. A transport failure or early stop can leave buffered frames
+unrecorded; this file is a bot diagnostic recording, not an authoritative server log.
+
 ```csharp
 foreach (var decision in Replay.Run(new MyBot(), "match-views.jsonl"))
     Console.WriteLine($"{decision.MatchId}:{decision.Tick} {decision.Command}");

@@ -38,6 +38,9 @@ public sealed class Tracker
 
     public IReadOnlyList<Track> Update(WorldView view)
     {
+        // Expire before association: a new observation must not revive stale history.
+        foreach (var id in tracks.Where(p => view.Tick - p.Value.LastSeenTick < 0 || view.Tick - p.Value.LastSeenTick > staleness).Select(p => p.Key).ToArray())
+        { tracks.Remove(id); history.Remove(id); }
         var matched = new HashSet<int>();
         foreach (var contact in view.Contacts.Where(c => c.Range is not null))
         {
@@ -45,7 +48,7 @@ public sealed class Tracker
             var bestDistance = activeGate;
             foreach (var track in tracks.Values)
             {
-                if (matched.Contains(track.TrackId)) continue;
+                if (matched.Contains(track.TrackId) || !Compatible(track.Kind, contact.Kind)) continue;
                 var distance = Helpers.Distance(Predict(track, view.Tick), contact.Pos);
                 if (distance < bestDistance) { bestDistance = distance; best = track; }
             }
@@ -65,7 +68,7 @@ public sealed class Tracker
             var bestBearing = passiveGate;
             foreach (var track in tracks.Values)
             {
-                if (matched.Contains(track.TrackId)) continue;
+                if (matched.Contains(track.TrackId) || !Compatible(track.Kind, contact.Kind)) continue;
                 var bearing = Helpers.BearingTo(view.Me.Pos, Predict(track, view.Tick));
                 var delta = Math.Abs(Helpers.SignedBearingDelta(contact.BearingDeg, bearing));
                 if (delta < bestBearing) { bestBearing = delta; best = track; }
@@ -80,10 +83,11 @@ public sealed class Tracker
             track.Pos = Predict(track, view.Tick);
             if (track.LastSeenTick != view.Tick) track.Source = "dead_reckoned";
         }
-        foreach (var id in tracks.Where(p => view.Tick - p.Value.LastSeenTick < 0 || view.Tick - p.Value.LastSeenTick > staleness).Select(p => p.Key).ToArray())
-        { tracks.Remove(id); history.Remove(id); }
         return Tracks;
     }
+
+    private static bool Compatible(string trackKind, string contactKind) =>
+        trackKind == contactKind || trackKind == "unknown" || contactKind == "unknown";
 
     private void FoldActive(Track track, Contact contact, int tick)
     {

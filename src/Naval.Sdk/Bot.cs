@@ -9,6 +9,10 @@ public sealed class RuntimeDiagnostics
 {
     public long Ticks { get; internal set; }
     public long Overruns { get; internal set; }
+    /// <summary>Queued observations coalesced into a more recent tick, retaining their events.</summary>
+    public long SkippedTicks { get; internal set; }
+    /// <summary>Computed commands discarded because their tick was superseded or locally expired.</summary>
+    public long DiscardedCommands { get; internal set; }
     public long CallbackErrors { get; internal set; }
     public long MalformedFrames { get; internal set; }
     internal Dictionary<string, long> Rejections { get; } = new();

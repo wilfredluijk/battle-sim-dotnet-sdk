@@ -12,8 +12,8 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; stop.Cancel(); };
 try
 {
     var options = ConnectionArguments.Parse(args).ToRunOptions("dotnet-hunter");
-    await BotRunner.RunAsync(new HunterBot(), options, stop.Token);
-    return 0;
+    var result = await BotRunner.RunAsync(new HunterBot(), options, stop.Token);
+    return result is null ? 1 : 0;
 }
 catch (OperationCanceledException) when (stop.IsCancellationRequested) { return 0; }
 catch (Exception e) when (e is ArgumentException or IOException or ProtocolMismatchException)
@@ -34,4 +34,11 @@ sealed class HunterBot : TacticalBot
         return true;
     }
     public override void OnError(string code, string message) => Console.Error.WriteLine($"Server error: {code}");
+    public override void OnTickTiming(TickTiming timing)
+    {
+        if (timing.OverBudget && (Diagnostics.Overruns == 1 || Diagnostics.Overruns % 50 == 0))
+            Console.Error.WriteLine($"Decision took {timing.ElapsedMs:F1} ms against a {timing.DeadlineMs} ms deadline. Reduce work in Decide; expired commands are discarded.");
+    }
+    public override void OnDisconnect(DisconnectInfo info) =>
+        Console.Error.WriteLine($"Disconnected during {info.Phase}; close code: {info.Code?.ToString() ?? "none"}.");
 }

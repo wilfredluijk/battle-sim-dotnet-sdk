@@ -14,7 +14,8 @@ internal sealed class LocalServer : IDisposable
     public CancellationToken Token => timeout.Token;
     public string Url => $"ws://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}/bot";
     public LocalServer() => listener.Start();
-    public async Task<WebSocket> Accept()
+    public async Task<WebSocket> Accept() => WebSocket.CreateFromStream(await Upgrade(), true, null, TimeSpan.FromSeconds(20));
+    internal async Task<NetworkStream> Upgrade()
     {
         var client = await listener.AcceptTcpClientAsync(Token);
         var stream = client.GetStream();
@@ -28,7 +29,7 @@ internal sealed class LocalServer : IDisposable
         var key = header.ToString().Split("\r\n").Single(l => l.StartsWith("Sec-WebSocket-Key:", StringComparison.OrdinalIgnoreCase)).Split(':', 2)[1].Trim();
         var accept = Convert.ToBase64String(SHA1.HashData(Encoding.ASCII.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
         await stream.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"), Token);
-        return WebSocket.CreateFromStream(stream, true, null, TimeSpan.FromSeconds(20));
+        return stream;
     }
     public Task Send(WebSocket socket, JsonObject message) => SendText(socket, message.ToJsonString());
     public async Task SendText(WebSocket socket, string text, bool fragmented = false)

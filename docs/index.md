@@ -11,6 +11,8 @@ algorithms and bot-view recording format.
 5. [Powerups](powerups.md): selection, activation, and all twelve effects.
 6. [Recording and replay](recording.md): offline decision evaluation.
 7. [Migrating from Python](migration.md): names and intentional .NET differences.
+8. [Hosted server run review, 17 September 2026](run-review-2026-09-17.md): results
+   and command diagnostics from the last three live matches.
 
 The [complete hunter example](../examples/HunterBot/Program.cs) builds with the
 solution. The library has no external runtime dependencies. Test packages are

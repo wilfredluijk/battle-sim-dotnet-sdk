@@ -1,0 +1,7 @@
+Naval.Sdk is a C#/.NET port of the MIT-licensed battle-sim Python SDK.
+Original: https://github.com/wilfredluijk/battle-sim-python-sdk
+Source revision: 816fa9baba75c7294561a6f111aa2735f4bbdd01 (main, SDK 0.5.0)
+Copyright (c) 2026 battle-sim contributors. See LICENSE.
+
+The original protocol fixture, algorithms and behavior are retained and adapted
+to .NET naming, records, IDisposable, CancellationToken and ClientWebSocket.

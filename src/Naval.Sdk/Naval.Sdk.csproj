@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <PackageId>Naval.Sdk</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>battle-sim contributors</Authors>
+    <Description>C# bot SDK for battle-sim: protocol 3, tactical toolkit, powerups, recording and replay.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/wilfredluijk/battle-sim-dotnet-sdk</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/wilfredluijk/battle-sim-dotnet-sdk</PackageProjectUrl>
+    <PackageTags>battle-sim;naval;bots;simulation</PackageTags>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
+    <None Include="../../NOTICE" Pack="true" PackagePath="/" />
+    <None Include="../../LICENSE" Pack="true" PackagePath="/" />
+  </ItemGroup>
+</Project>

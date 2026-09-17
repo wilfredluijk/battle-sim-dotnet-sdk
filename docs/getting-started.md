@@ -70,9 +70,12 @@ The lower-level runner supports custom WebSocket paths.
 Participant files define both settings:
 
 ```dotenv
-BATTLE_SERVER_URL=wss://operator.example/bot
+BATTLE_SERVER_URL=wss://93.190.187.250/bot
 BATTLE_BOT_TOKEN='your-participant-credential'
 ```
+
+This is the hosted workshop endpoint. Use the participant credential assigned to your
+team; do not substitute the administrator credential.
 
 An explicitly selected file replaces both ambient settings as a pair. It supports
 quotes, comments, and optional `export`; it never executes commands or expands

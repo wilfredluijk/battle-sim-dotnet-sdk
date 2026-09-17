@@ -27,7 +27,9 @@ dotnet run --project examples/HunterBot -- --env-file /path/to/participant.env
 ```
 
 Alternatively, set `BATTLE_SERVER_URL` and `BATTLE_BOT_TOKEN`. Credentials are never
-accepted as command-line flags. The default endpoint is `ws://localhost:7878/bot`.
+accepted as command-line flags. The hosted workshop endpoint is
+`wss://93.190.187.250/bot` and requires your assigned participant token. The default
+endpoint remains `ws://localhost:7878/bot` for local development.
 
 ## Write a bot
 
